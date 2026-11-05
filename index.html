@@ -549,13 +549,13 @@ function cleanState(d){
   const clnSrc=(a,def)=>Array.isArray(a)?[...new Set(a.filter(s=>typeof s==='string'&&s.trim()).map(s=>s.trim().slice(0,60)))].slice(0,30):def.slice();
   const target=Number.isFinite(Number(d.target))&&Number(d.target)>0&&Number(d.target)<=1000000000?Math.round(Number(d.target)):0;
   const nt=d.notif&&typeof d.notif==='object'?d.notif:{};
-  const notif={on:!!nt.on,sched:nt.sched!==false,target:nt.target!==false,morning:nt.morning!==false};
+  const notif={on:!!nt.on,sched:nt.sched!==false,target:nt.target!==false,morning:nt.morning!==false,start:nt.start!==false,urgent:nt.urgent!==false,budget:nt.budget!==false,recap:nt.recap!==false,clash:nt.clash!==false};
   const fired={};if(d.fired&&typeof d.fired==='object')Object.entries(d.fired).slice(-300).forEach(([k,v])=>{if(Number.isFinite(Number(v)))fired[k.slice(0,80)]=Number(v)});
   return {bad,state:{notif,fired,target,schedules,notes,incomes,lastArea:AREAS.includes(d.lastArea)?d.lastArea:'Kota Bogor',sources:clnSrc(d.sources,DEFSRC),expSources:clnSrc(d.expSources,DEFEXP)}};
 }
 const DEFSRC=['ShopeeFood','Jualan kue','Jual game','Lainnya'];
 const DEFEXP=['Bahan kue','Bensin','Makan','Kuliah','Lainnya'];
-let state={notif:{on:false,sched:true,target:true,morning:true},fired:{},target:0,schedules:[],notes:[],incomes:[],lastArea:'Kota Bogor',sources:DEFSRC.slice(),expSources:DEFEXP.slice()};
+let state={notif:{on:false,sched:true,target:true,morning:true,start:true,urgent:true,budget:true,recap:true,clash:true},fired:{},target:0,schedules:[],notes:[],incomes:[],lastArea:'Kota Bogor',sources:DEFSRC.slice(),expSources:DEFEXP.slice()};
 function load(){
   try{
     const d=JSON.parse(localStorage.getItem(KEY)||'null');
@@ -891,7 +891,7 @@ function incomeForm(kind='in'){
     const before=sumOf(state.incomes.filter(i=>i.date===dt.value&&!isOut(i)));
     state.incomes.unshift({id:uid(),type:out?'out':'in',date:dt.value,amount,source:sr.value.trim()||(out?'Pengeluaran':'Pemasukan')});
     save();toast(`${out?'Pengeluaran':'Pemasukan'} ${rupiah(amount)} dicatat.`);
-    if(!out)targetReached(before,dt.value);
+    if(!out)targetReached(before,dt.value);else budgetCheck(dt.value);
   });
   const drawSrc=()=>{
     const cur=f.elements.sr.value.trim(),can=cur&&!state[KS].some(s=>s.toLowerCase()===cur.toLowerCase());
@@ -1022,6 +1022,9 @@ function notify(title,body,tag){
   if(NSUP()&&Notification.permission==='granted'){
     try{const n=new Notification(title,{body,tag:tag||undefined});n.onclick=()=>{window.focus();n.close()};return true}catch{}
   }
+  if(NSUP()&&Notification.permission==='granted'&&navigator.serviceWorker&&navigator.serviceWorker.getRegistration){
+    navigator.serviceWorker.getRegistration().then(r=>{if(r)r.showNotification(title,{body,tag:tag||undefined})}).catch(()=>{});
+  }
   toast(title+'. '+body);return false;   // cadangan: pesan di dalam aplikasi (mis. Chrome HP tidak mendukung Notification langsung)
 }
 async function enableNotif(){
@@ -1040,7 +1043,7 @@ function renderNotif(){
   const sw=(k,t,d)=>`<label class="swrow"><div><b>${t}</b><small>${d}</small></div><input type="checkbox" data-nt="${k}" ${N[k]?'checked':''}></label>`;
   el.innerHTML=`<p style="margin-top:0">Pengingat muncul di notifikasi Chrome selama aplikasi ini terbuka di salah satu tab.</p>${warn}`+
     (N.on&&perm==='granted'
-      ?sw('sched','Pengingat jadwal','15 menit sebelum jadwal mulai')+sw('target','Target harian','Kabar saat target tercapai, dan pengingat jam 19.00 kalau belum')+sw('morning','Ringkasan pagi','Jadwal dan tugas hari ini, antara jam 07.00 dan 11.00')+
+      ?sw('sched','Pengingat jadwal','15 menit sebelum jadwal mulai')+sw('start','Jadwal dimulai','Saat jadwal tepat dimulai')+sw('clash','Peringatan bentrok','Kalau jadwal hari ini atau besok bertabrakan')+sw('urgent','Tugas penting','Pengingat siang kalau ada tugas Penting yang belum selesai')+sw('budget','Pengeluaran','Kabar saat pengeluaran hari ini melebihi pemasukan')+sw('recap','Rekap malam','Ringkasan hari antara jam 20.00 dan 23.00')+sw('target','Target harian','Kabar saat target tercapai, dan pengingat jam 19.00 kalau belum')+sw('morning','Ringkasan pagi','Jadwal dan tugas hari ini, antara jam 07.00 dan 11.00')+
         `<div class="ntbtns"><button class="secondary" data-act="nt-test">Tes notifikasi</button><button class="danger" data-act="nt-off">Matikan</button></div>`
       :(sup&&perm!=='denied'?`<button class="primary" data-act="nt-on">${ic('check')} Aktifkan notifikasi</button>`:''));
 }
@@ -1052,6 +1055,26 @@ function checkNotifs(){
     const diff=(atTime(x.date,x.start)-now)/60000;
     if(diff>0&&diff<=15)once(`s:${x.id}:${x.start}`,k=>notify(`Jadwal ${Math.ceil(diff)} menit lagi`,`${x.title}, ${x.start}–${x.end}`,k));
   });
+  if(N.start)state.schedules.filter(x=>x.date===day).forEach(x=>{
+    const diff=(now-atTime(x.date,x.start))/60000;
+    if(diff>=0&&diff<10&&schedStatus(x)==='live')once(`g:${x.id}:${x.start}`,k=>notify('Jadwal dimulai sekarang',`${x.title}, ${x.start}–${x.end}${x.area?' ('+x.area+')':x.note?' ('+x.note+')':''}`,k));
+  });
+  if(N.clash&&h>=6){
+    const tom=ymd(addDays(now,1));
+    [[day,'hari ini'],[tom,'besok']].forEach(([d,lbl])=>{
+      const cl=clashes(state.schedules.filter(x=>x.date===d&&(d!==day||schedStatus(x)!=='done')));
+      if(cl.length)once(`c:${d}:${cl.length}`,k=>notify(`${cl.length} jadwal bentrok ${lbl}`,`${cl[0].a.title} dan ${cl[0].b.title} bertabrakan ${cl[0].s}–${cl[0].e}`,k));
+    });
+  }
+  if(N.urgent&&h>=12&&h<20){
+    const u=state.notes.filter(n=>!n.done&&n.prio==='high').length;
+    if(u)once(`u:${day}`,k=>notify('Tugas penting belum selesai',`${u} tugas Penting menunggu kamu.`,k));
+  }
+  if(N.recap&&h>=20&&h<23){
+    const inc=sumOf(state.incomes.filter(i=>i.date===day&&!isOut(i))),out=sumOf(state.incomes.filter(i=>i.date===day&&isOut(i)));
+    const sj=state.schedules.filter(x=>x.date===day).length,tl=state.notes.filter(n=>!n.done).length;
+    if(inc||out||sj)once(`r:${day}`,k=>notify('Rekap hari ini',[sj?`${sj} jadwal`:'',inc?`masuk ${rupiah(inc)}`:'',out?`keluar ${rupiah(out)}`:'',tl?`${tl} tugas tersisa`:'Semua tugas beres'].filter(Boolean).join(', '),k));
+  }
   if(N.morning&&h>=7&&h<11){
     const js=state.schedules.filter(x=>x.date===day&&schedStatus(x)!=='done').length,tg=state.notes.filter(n=>!n.done).length;
     if(js||tg)once(`m:${day}`,k=>notify('Ringkasan hari ini',[js?`${js} jadwal`:'',tg?`${tg} tugas belum selesai`:''].filter(Boolean).join(' dan '),k));
@@ -1063,9 +1086,21 @@ function checkNotifs(){
   const old=Date.now()-3*86400000;Object.keys(state.fired).forEach(k=>{if(state.fired[k]<old){delete state.fired[k];changed=true}});
   if(changed){try{localStorage.setItem(KEY,JSON.stringify(state))}catch{}}
 }
+function budgetCheck(date){
+  if(date!==today())return;
+  const inc=sumOf(state.incomes.filter(i=>i.date===date&&!isOut(i))),out=sumOf(state.incomes.filter(i=>i.date===date&&isOut(i)));
+  if(out>inc&&out>0&&!state.fired['bg:'+date]){
+    state.fired['bg:'+date]=Date.now();try{localStorage.setItem(KEY,JSON.stringify(state))}catch{}
+    if(state.notif.on&&state.notif.budget)notify('Pengeluaran melebihi pemasukan',`Hari ini keluar ${rupiah(out)}, masuk ${rupiah(inc)}.`,'bg');
+  }
+}
 function targetReached(before,date){
   const t=state.target;if(!t||date!==today())return;
   const after=sumOf(state.incomes.filter(i=>i.date===date&&!isOut(i)));
+  if(before<t*0.8&&after>=t*0.8&&after<t&&!state.fired['t8:'+date]){
+    state.fired['t8:'+date]=Date.now();try{localStorage.setItem(KEY,JSON.stringify(state))}catch{}
+    if(state.notif.on&&state.notif.target)notify('Sedikit lagi!',`Sudah ${rupiah(after)}, sisa ${rupiah(t-after)} menuju target.`,'t8');
+  }
   if(before<t&&after>=t&&!state.fired['tk:'+date]){
     state.fired['tk:'+date]=Date.now();try{localStorage.setItem(KEY,JSON.stringify(state))}catch{}
     if(state.notif.on&&state.notif.target)notify('Target harian tercapai!',`Pemasukan hari ini ${rupiah(after)} dari target ${rupiah(t)}.`,'tk');
